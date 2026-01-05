@@ -1,29 +1,74 @@
 <?php
 header("Content-Type: application/json");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST");
+header("Access-Control-Allow-Headers: Content-Type");
+
 include 'db.php';
 
 $data = json_decode(file_get_contents("php://input"), true);
 
-$username = trim($data['username']);
+if (!isset($data['username']) || !isset($data['password'])) {
+    echo json_encode(["success" => false, "message" => "Missing username or password"]);
+    exit;
+}
+
+$username = $data['username'];
 $password = $data['password'];
 
-$sql = "SELECT * FROM users WHERE username = ?";
-$stmt = $conn->prepare($sql);
+// Updated query: JOIN user_status_details to get the 'status' column
+$stmt = $conn->prepare("
+    SELECT u.id, u.password, u.role, s.status, s.suspension_reason, s.suspension_end_date
+    FROM users u 
+    LEFT JOIN user_status_details s ON u.id = s.user_id 
+    WHERE u.username = ?
+");
+
+if (!$stmt) {
+    echo json_encode(["success" => false, "message" => "Database error: " . $conn->error]);
+    exit;
+}
+
 $stmt->bind_param("s", $username);
 $stmt->execute();
 $result = $stmt->get_result();
 
-if ($row = $result->fetch_assoc()) {
-    if (password_verify($password, $row['password'])) {
+if ($result->num_rows > 0) {
+    $user = $result->fetch_assoc();
+    if (password_verify($password, $user['password'])) {
+        
+        // Check if user is suspended or blocked
+        if ($user['status'] === 'suspended') {
+             echo json_encode([
+                 "success" => false, 
+                 "status" => "suspended",
+                 "message" => "Your account is suspended.",
+                 "reason" => $user['suspension_reason'],
+                 "end_date" => $user['suspension_end_date']
+                ]);
+             exit;
+        }
+        if ($user['status'] === 'blocked') {
+             echo json_encode(["success" => false, "message" => "Your account is blocked."]);
+             exit;
+        }
+
         echo json_encode([
-            "status" => "success", 
-            "id" => $row['id'],
-            "username" => $row['username']
+            "success" => true, 
+            "user" => [
+                "id" => $user['id'],
+                "username" => $username,
+                "role" => $user['role'],
+                "status" => $user['status'] ?? 'active' // Default to active if record missing
+            ]
         ]);
     } else {
-        echo json_encode(["status" => "error", "message" => "Invalid username or password"]);
+        echo json_encode(["success" => false, "message" => "Invalid password"]);
     }
 } else {
-    echo json_encode(["status" => "error", "message" => "Invalid username or password"]);
+    echo json_encode(["success" => false, "message" => "User not found"]);
 }
+
+$stmt->close();
+$conn->close();
 ?>
