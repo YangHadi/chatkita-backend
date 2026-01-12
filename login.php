@@ -39,6 +39,16 @@ if ($result->num_rows > 0) {
         
         // Check if user is suspended or blocked
         if ($user['status'] === 'suspended') {
+             // Check if suspension has expired
+             if ($user['suspension_end_date'] && strtotime($user['suspension_end_date']) < time()) {
+                 // Auto-lift suspension
+                 $liftStmt = $conn->prepare("UPDATE user_status_details SET status = 'active', suspension_reason = NULL, suspension_end_date = NULL WHERE user_id = ?");
+                 $liftStmt->bind_param("i", $user['id']);
+                 $liftStmt->execute();
+                 $liftStmt->close();
+                 // Allow login to proceed
+                 $user['status'] = 'active';
+             } else {
              echo json_encode([
                  "success" => false, 
                  "status" => "suspended",
@@ -47,6 +57,7 @@ if ($result->num_rows > 0) {
                  "end_date" => $user['suspension_end_date']
                 ]);
              exit;
+             }
         }
         if ($user['status'] === 'blocked') {
              echo json_encode(["success" => false, "message" => "Your account is blocked."]);

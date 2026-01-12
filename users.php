@@ -132,8 +132,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $endDate = null;
         }
 
-        $stmt = $conn->prepare("UPDATE user_status_details SET status = ?, suspension_reason = ?, suspension_end_date = ? WHERE user_id = ?");
-        $stmt->bind_param("sssi", $newStatus, $reason, $endDate, $userId);
+        $stmt = $conn->prepare("INSERT INTO user_status_details (user_id, status, suspension_reason, suspension_end_date) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE status = VALUES(status), suspension_reason = VALUES(suspension_reason), suspension_end_date = VALUES(suspension_end_date)");
+        $stmt->bind_param("isss", $userId, $newStatus, $reason, $endDate);
 
         if ($adminId > 0) {
             $targetUsername = getUsernameById($conn, $userId);
@@ -144,8 +144,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $logStmt->close();
         }
     } elseif ($action === 'activate') {
-        $stmt = $conn->prepare("UPDATE user_status_details SET status = ?, suspension_reason = NULL, suspension_end_date = NULL WHERE user_id = ?");
-        $stmt->bind_param("si", $newStatus, $userId);
+        $stmt = $conn->prepare("INSERT INTO user_status_details (user_id, status, suspension_reason, suspension_end_date) VALUES (?, ?, NULL, NULL) ON DUPLICATE KEY UPDATE status = VALUES(status), suspension_reason = NULL, suspension_end_date = NULL");
+        $stmt->bind_param("is", $userId, $newStatus);
 
         if ($adminId > 0) {
             $targetUsername = getUsernameById($conn, $userId);
@@ -172,6 +172,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 */
 if ($_SERVER['REQUEST_METHOD'] === "GET" && isset($_GET['fetch_logs']) && isset($_GET['user_id'])) {
     $userId = intval($_GET['user_id']);
+    $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 15;
+    $page = isset($_GET['page']) ? intval($_GET['page']) : 1;
+    $offset = ($page - 1) * $limit;
+
+    // Get total count for pagination
+    $countStmt = $conn->prepare("SELECT COUNT(*) as total FROM user_moderation_logs WHERE user_id = ?");
+    $countStmt->bind_param("i", $userId);
+    $countStmt->execute();
+    $totalLogs = $countStmt->get_result()->fetch_assoc()['total'];
+    $countStmt->close();
     
     $stmt = $conn->prepare("
         SELECT l.action, l.resulting_status, l.reason, l.created_at, u.username as admin_name
@@ -179,8 +189,9 @@ if ($_SERVER['REQUEST_METHOD'] === "GET" && isset($_GET['fetch_logs']) && isset(
         LEFT JOIN users u ON l.admin_id = u.id
         WHERE l.user_id = ?
         ORDER BY l.created_at DESC
+        LIMIT ? OFFSET ?
     ");
-    $stmt->bind_param("i", $userId);
+    $stmt->bind_param("iii", $userId, $limit, $offset);
     $stmt->execute();
     $result = $stmt->get_result();
     
@@ -188,8 +199,11 @@ if ($_SERVER['REQUEST_METHOD'] === "GET" && isset($_GET['fetch_logs']) && isset(
     while ($row = $result->fetch_assoc()) {
         $logs[] = $row;
     }
+    $stmt->close();
+
+    $has_more = ($offset + count($logs)) < $totalLogs;
     
-    echo json_encode(["success" => true, "logs" => $logs]);
+    echo json_encode(["success" => true, "logs" => $logs, "has_more" => $has_more, "total" => $totalLogs]);
     exit;
 }
 
@@ -261,7 +275,7 @@ if ($_SERVER['REQUEST_METHOD'] === "GET" && isset($_GET['fetch_recent_logs'])) {
 if ($_SERVER['REQUEST_METHOD'] === "GET" && isset($_GET['admin'])) {
 
     $result = $conn->query("
-        SELECT u.id, u.username, u.role, s.status, s.suspension_reason, s.suspension_end_date, u.created_at
+        SELECT u.id, u.username, u.role, COALESCE(s.status, 'active') as status, s.suspension_reason, s.suspension_end_date, u.created_at
         FROM users u
         LEFT JOIN user_status_details s ON u.id = s.user_id
         WHERE u.role = 'user'
